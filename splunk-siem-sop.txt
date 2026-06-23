@@ -1,0 +1,966 @@
+================================================================================
+SOP / RUNBOOK — Lab 3: Splunk SIEM & Log Analysis
+================================================================================
+Author        : Sammatha Adams
+Lab Series    : Home Lab Series (Lab 3 of 5)
+Environment   : Microsoft Azure — Ubuntu 22.04 (Splunk) · Windows Server 2025 (DC01)
+Splunk        : Enterprise 10.x — Free licence (500 MB/day)
+Certifications: CompTIA Security+ · CySA+ · Splunk Core Certified User
+Last Updated  : June 2026
+================================================================================
+
+PURPOSE
+-------
+This runbook documents the end-to-end setup of a Splunk SIEM in a home lab
+environment hosted on Microsoft Azure. You will deploy two VMs via Azure CLI,
+install Splunk Enterprise on an Ubuntu server, connect your Windows Server DC01
+as a log source using the Universal Forwarder, write SPL queries to investigate
+security events, build a live security dashboard, and configure an automated
+brute-force detection alert.
+
+By the end of this lab you will have demonstrated the core workflow of a SOC
+analyst: ingest logs, search for threats, visualise the environment, and alert
+automatically when suspicious conditions are met.
+
+Certification Alignment: CompTIA Security+ | CySA+ | Splunk Core Certified User
+Career Relevance:        SOC Analyst (Tier 1-3) | Security Engineer | Incident Responder
+
+--------------------------------------------------------------------------------
+NOTE — WHAT GETS INSTALLED WHERE
+--------------------------------------------------------------------------------
+This is a common point of confusion before starting. Here is the complete picture:
+
+  YOUR LOCAL MACHINE (Windows laptop/desktop)
+    Nothing to install for Splunk.
+    - Open your browser to access the Splunk web UI at http://<SplunkVM-IP>:8000
+    - SSH into the Ubuntu VM from PowerShell: ssh labadmin@<SplunkVM-IP>
+    - RDP into DC01 when you need to work on the Windows VM
+
+  UBUNTU VM — splunk-vm (new VM created in this lab)
+    Splunk Enterprise — this IS the SIEM. All logs are received, parsed, and
+    stored here. All searching, dashboards, and alerts live here.
+
+  DC01 WINDOWS SERVER VM (re-deployed from Lab 1)
+    Splunk Universal Forwarder ONLY — a ~20 MB agent that reads Windows Event
+    Logs and ships them to the Ubuntu VM over port 9997. It does not index
+    anything and has no web UI. Think of it as a mail carrier: it picks up
+    letters (logs) and delivers them to the post office (Splunk).
+
+  Summary: Splunk Enterprise on Ubuntu · Universal Forwarder on DC01 · nothing on local machine.
+
+PREREQUISITES
+-------------
+- Azure account with active subscription
+- Azure CLI installed on your local machine (az login already completed)
+- No SSH client install needed — Windows 10/11 includes OpenSSH built-in.
+  SSH from PowerShell: ssh labadmin@<SPLUNK_VM_PUBLIC_IP>
+- Splunk account (use temp-mail.org for registration — see Step 1)
+- Both VMs will be created fresh using the Azure CLI commands in Step 0
+
+================================================================================
+STEP 0 — DEPLOY BOTH VMs WITH AZURE CLI
+================================================================================
+
+PURPOSE
+  Every lab starts fresh — VMs are torn down after each session to avoid ongoing
+  Azure charges. This step rebuilds the entire environment from scratch using the
+  Azure CLI. Both VMs are placed in the same VNet so they can communicate
+  privately over port 9997 without exposing that traffic to the internet.
+
+BACKGROUND
+  A Resource Group is a logical container in Azure that holds all related
+  resources for a project — VMs, disks, NSGs, VNet, and public IPs. Putting
+  everything in one resource group makes it easy to view costs and delete
+  everything at once when the lab is done.
+
+  A Virtual Network (VNet) is a private network in Azure. VMs inside the same
+  VNet can reach each other using private IP addresses without going through the
+  public internet. This is how DC01 will send logs to the Splunk VM securely —
+  traffic never leaves Azure's internal network.
+
+  A Network Security Group (NSG) is a firewall. It controls what traffic is
+  allowed in and out of each VM. In this lab we lock down each VM aggressively:
+  only your IP can RDP to DC01, only your IP can SSH or access the Splunk UI,
+  and only VMs inside the VNet can send logs to Splunk on port 9997.
+
+-----------------------------------------------------------------------
+0.1  SET VARIABLES
+-----------------------------------------------------------------------
+  Run all commands from PowerShell on your local machine.
+  Set these variables once — every command below references them.
+
+  $RG        = "rg-lab03-0626"
+  $LOCATION  = "westus2"
+  $VNET      = "splunk-lab3-vnet"
+  $SUBNET    = "lab3-subnet"
+  $ADMIN     = "labadmin"
+  $PASSWORD  = "LabPass123!"    # Change this before running — must meet Azure
+                                 # complexity: 12+ chars, upper, lower, number, symbol
+
+  * $RG: The resource group name. The date suffix makes it easy to identify
+    and clean up after the lab.
+  * $LOCATION: Azure region. westus2 (West US 2) is used consistently across
+    all labs so VMs are geographically close and latency is minimal.
+  * $VNET / $SUBNET: Both VMs share one VNet and one subnet so they can reach
+    each other by private IP without any additional routing configuration.
+
+-----------------------------------------------------------------------
+0.2  CREATE RESOURCE GROUP AND VIRTUAL NETWORK
+-----------------------------------------------------------------------
+
+  # Create the resource group
+  az group create `
+    --name $RG `
+    --location $LOCATION
+
+  * az group create: Provisions the resource group in Azure. Until this exists
+    nothing else can be deployed — it is always the first step.
+
+  # Create the VNet and subnet
+  az network vnet create `
+    --resource-group $RG `
+    --name $VNET `
+    --address-prefix 10.0.0.0/16 `
+    --subnet-name $SUBNET `
+    --subnet-prefix 10.0.1.0/24
+
+  * --address-prefix 10.0.0.0/16: Reserves the 10.0.0.0/16 address space
+    (65,536 IPs) for the VNet. Both VMs will get private IPs from this range.
+  * --subnet-prefix 10.0.1.0/24: Carves a /24 subnet (256 IPs) from the VNet
+    for VMs to be placed in.
+  * WHY VNet first: The Splunk NSG rule for port 9997 restricts access to this
+    CIDR (10.0.0.0/16). Creating the VNet first gives us that CIDR to reference.
+
+-----------------------------------------------------------------------
+0.3  DEPLOY DC01 — WINDOWS SERVER 2025
+-----------------------------------------------------------------------
+  PURPOSE: Re-deploy the Active Directory VM from Lab 1. DC01 is the log source
+  for this lab — Windows records every logon, failure, and lockout event in its
+  Security Event Log, and the Universal Forwarder will ship those events to Splunk.
+
+  # Create NSG for DC01 (replace YOUR_PUBLIC_IP — check whatismyip.com)
+  az network nsg create `
+    --resource-group $RG `
+    --name dc01-nsg
+
+  az network nsg rule create `
+    --resource-group $RG `
+    --nsg-name dc01-nsg `
+    --name Allow-RDP `
+    --priority 1000 `
+    --protocol Tcp `
+    --destination-port-ranges 3389 `
+    --source-address-prefixes YOUR_PUBLIC_IP `
+    --access Allow
+
+  * Port 3389 is the RDP port. Restricting the source to your IP only means
+    even if someone scans the internet for open RDP ports, they cannot connect —
+    only requests from your specific IP will be allowed through the NSG.
+
+  # Deploy DC01
+  az vm create `
+    --resource-group $RG `
+    --name DC01 `
+    --image Win2025Datacenter `
+    --size Standard_D2s_v3 `
+    --vnet-name $VNET `
+    --subnet $SUBNET `
+    --nsg dc01-nsg `
+    --admin-username $ADMIN `
+    --admin-password $PASSWORD `
+    --location $LOCATION `
+    --security-type TrustedLaunch `
+    --public-ip-sku Standard
+
+  * --image Win2025Datacenter: Windows Server 2025 Datacenter x64 Gen2.
+  * --size Standard_D2s_v3: 2 vCPUs · 8 GiB RAM — needed to run Active
+    Directory services alongside the Universal Forwarder without lag.
+  * --security-type TrustedLaunch: Enables Secure Boot and vTPM — Azure's
+    hardened VM launch option for Windows Server 2025.
+  * --vnet-name / --subnet: Places DC01 inside the shared VNet so it can
+    reach the Splunk VM by private IP.
+
+  # Get DC01's private IP — save this, you need it in Step 3
+  az vm list-ip-addresses `
+    --resource-group $RG `
+    --name DC01 `
+    --query "[].virtualMachine.network.privateIpAddresses[0]" `
+    --output tsv
+
+  * WHY private IP: The Universal Forwarder on DC01 sends logs to the Splunk VM
+    using the private IP. Private IP traffic stays inside Azure's network —
+    faster, more secure, and it does not consume public bandwidth.
+
+-----------------------------------------------------------------------
+0.4  DEPLOY SPLUNK VM — UBUNTU 22.04
+-----------------------------------------------------------------------
+  PURPOSE: Create the server that will run Splunk Enterprise. Ubuntu is used
+  because Splunk's Linux version is more stable and resource-efficient than the
+  Windows version, and Linux VMs are cheaper to run on Azure.
+
+  # Create NSG for Splunk VM
+  az network nsg create `
+    --resource-group $RG `
+    --name splunk-nsg
+
+  # Port 22 — SSH from your IP only
+  az network nsg rule create `
+    --resource-group $RG `
+    --nsg-name splunk-nsg `
+    --name Allow-SSH `
+    --priority 1000 `
+    --protocol Tcp `
+    --destination-port-ranges 22 `
+    --source-address-prefixes YOUR_PUBLIC_IP `
+    --access Allow
+
+  * Port 22 is the SSH port. SSH is how you connect to and control the Ubuntu
+    VM from your local machine. Restricting it to your IP prevents brute force
+    SSH attacks from the internet — a common attack vector on cloud VMs.
+
+  # Port 8000 — Splunk Web UI from your IP only
+  az network nsg rule create `
+    --resource-group $RG `
+    --nsg-name splunk-nsg `
+    --name Allow-SplunkUI `
+    --priority 1010 `
+    --protocol Tcp `
+    --destination-port-ranges 8000 `
+    --source-address-prefixes YOUR_PUBLIC_IP `
+    --access Allow
+
+  * Port 8000 is where the Splunk web interface runs. You open this in your
+    browser to search logs, build dashboards, and configure alerts. Your IP
+    restriction ensures the dashboard is not publicly accessible.
+
+  # Port 9997 — Forwarder input from VNet CIDR only (NEVER open to internet)
+  az network nsg rule create `
+    --resource-group $RG `
+    --nsg-name splunk-nsg `
+    --name Allow-SplunkForwarder-VNet `
+    --priority 1020 `
+    --protocol Tcp `
+    --destination-port-ranges 9997 `
+    --source-address-prefixes 10.0.0.0/16 `
+    --access Allow
+
+  * Port 9997 is the Splunk receiving port — the port that accepts incoming
+    log data from forwarders. Restricting it to 10.0.0.0/16 (the VNet CIDR)
+    means only other VMs inside the same Azure VNet can send data to Splunk.
+    If this port were open to 0.0.0.0/0, anyone on the internet could flood
+    your Splunk with junk data and exhaust the 500 MB/day free licence.
+
+  # Deploy Splunk Ubuntu VM
+  az vm create `
+    --resource-group $RG `
+    --name splunk-vm `
+    --image Ubuntu2204 `
+    --size Standard_B2s `
+    --vnet-name $VNET `
+    --subnet $SUBNET `
+    --nsg splunk-nsg `
+    --admin-username $ADMIN `
+    --admin-password $PASSWORD `
+    --location $LOCATION `
+    --public-ip-sku Standard
+
+  * --image Ubuntu2204: Ubuntu 22.04 LTS — the Long Term Support release,
+    stable and supported through 2027.
+  * --size Standard_B2s: 2 vCPUs · 4 GiB RAM. Splunk's minimum requirement
+    is 4 GB RAM. B2s is the smallest VM that meets this requirement.
+
+  # Get both IPs from the Splunk VM — save these
+  az vm list-ip-addresses `
+    --resource-group $RG `
+    --name splunk-vm `
+    --query "[].virtualMachine.network.{Public:publicIpAddresses[0].ipAddress,Private:privateIpAddresses[0]}" `
+    --output table
+
+  * Public IP  → Your browser: http://<PUBLIC_IP>:8000
+                 PowerShell SSH: ssh labadmin@<PUBLIC_IP>
+  * Private IP → Universal Forwarder installer on DC01 uses this to
+                 know where to send logs (port 9997)
+
+-----------------------------------------------------------------------
+0.5  VERIFY BOTH VMs ARE RUNNING
+-----------------------------------------------------------------------
+
+  az vm list `
+    --resource-group $RG `
+    --show-details `
+    --query "[].{Name:name, State:powerState, IP:publicIps}" `
+    --output table
+
+  Expected output:
+    Name        State          IP
+    ----------  -------------  ---------------
+    DC01        VM running     <public IP>
+    splunk-vm   VM running     <public IP>
+
+  * --show-details: Pulls current runtime state, not just provisioning state.
+    A VM can show as "Succeeded" (provisioned) but still be starting up.
+    "VM running" confirms the OS is fully booted.
+
+-----------------------------------------------------------------------
+0.6  TEARDOWN — RUN WHEN DONE WITH THE LAB
+-----------------------------------------------------------------------
+
+  az group delete --name $RG --yes --no-wait
+
+  * az group delete: Permanently removes the resource group and everything in
+    it — both VMs, both disks, NSGs, VNet, and public IPs in a single command.
+  * --yes: Skips the confirmation prompt.
+  * --no-wait: Returns control to your terminal immediately. Deletion continues
+    in the background — you can verify completion in the Azure portal.
+  * This is non-reversible. All resources in rg-lab03-0626 will be deleted.
+
+================================================================================
+STEP 1 — GET SPLUNK ENTERPRISE
+================================================================================
+
+PURPOSE
+  Download the Splunk Enterprise installer before connecting to the Ubuntu VM.
+  Splunk Enterprise is free — you get a 60-day full-featured trial, after which
+  it auto-converts to the permanent free licence (500 MB/day ingest). That limit
+  is more than enough for a home lab generating Windows Event Logs.
+
+BACKGROUND
+  Splunk offers several products. It is important to download the right one:
+  - Splunk Enterprise: The on-premises SIEM. This is what you want.
+  - Splunk Cloud: A hosted SaaS version. NOT used in this lab.
+  - Splunk SOAR: A security orchestration tool. NOT used in this lab.
+  - Universal Forwarder: The log shipping agent (downloaded separately in Step 3).
+
+1.1  Navigate to: https://splunk.com/en_us/download/splunk-enterprise.html
+
+1.2  Create a free account using a temporary email address:
+     - Go to https://temp-mail.org/en/
+       A disposable email address is generated automatically. Copy it.
+     - Paste it into the Splunk registration form
+     - Fill First Name, Last Name, Company, Job Title, Phone with any dummy data
+       (these fields are not verified)
+     - Splunk sends a confirmation email — return to temp-mail.org, open it,
+       click the confirmation link
+
+     * WHY temp-mail: Splunk requires registration before allowing the download.
+       Using a disposable address keeps your real inbox clean and avoids
+       Splunk's marketing emails.
+
+1.3  Download the correct package:
+     - Product: Splunk Enterprise
+     - Platform: Linux → .deb package
+       The .deb format is the Ubuntu/Debian package format, installed with dpkg.
+
+     * WHY Linux .deb: The Ubuntu VM you deployed in Step 0 runs Debian-based
+       Linux. The .deb package installs cleanly with a single command and handles
+       directory creation and service registration automatically.
+
+================================================================================
+STEP 2 — INSTALL AND CONFIGURE SPLUNK ON THE UBUNTU VM
+================================================================================
+
+PURPOSE
+  Install Splunk Enterprise on the Ubuntu VM, configure it to receive incoming
+  log data on port 9997, and create the index where Windows logs will be stored.
+  An index in Splunk is like a database table — a named storage bucket for a
+  specific set of events. Logs must go into an index before they can be searched.
+
+BACKGROUND
+  SSH (Secure Shell) is the protocol used to remotely control Linux servers
+  from a terminal. It encrypts all traffic between your machine and the VM.
+  Windows 10 and 11 include an SSH client built in — no additional software
+  is required. All commands in this section are run inside the SSH session
+  on the Ubuntu VM, not on your local machine.
+
+2.1  SSH into the Splunk VM from PowerShell:
+
+     ssh labadmin@<SPLUNK_VM_PUBLIC_IP>
+
+     - First connection: type "yes" when prompted about the host fingerprint.
+       This fingerprint uniquely identifies the server — accepting it means
+       you are confirming you are connecting to the right machine.
+     - Enter your password when prompted.
+     - Note: no characters appear when typing the password. This is normal
+       Linux security behaviour. Type your password and press Enter.
+
+2.2  Download and install Splunk:
+
+     # Download the installer
+     wget -O splunk-10.2.2-linux-amd64.deb \
+       "https://download.splunk.com/products/splunk/releases/10.2.2/linux/splunk-10.2.2-80b90d638de6-linux-amd64.deb"
+
+     * wget: A Linux command-line download tool. The -O flag names the output
+       file. If this URL returns a 404, the version has been updated — log into
+       splunk.com, go to Free Trials and Downloads, select Linux .deb, and copy
+       the wget command shown on the download page for the current version.
+
+     # Install the package
+     sudo dpkg -i splunk-10.2.2-linux-amd64.deb
+
+     * sudo: Runs the command as a superuser (administrator). Required for
+       installing software on Linux.
+     * dpkg -i: The Debian package manager install command. It unpacks the .deb
+       file, copies Splunk's files to /opt/splunk/, and sets up directory
+       permissions.
+
+     # Start Splunk for the first time
+     sudo /opt/splunk/bin/splunk start --accept-license
+
+     * --accept-license: Accepts the Splunk licence agreement non-interactively.
+       On first run, Splunk will prompt you to set an admin username and
+       password. These are your Splunk login credentials — different from your
+       Linux VM credentials. Save them.
+
+     # Enable Splunk to start automatically on reboot
+     sudo /opt/splunk/bin/splunk enable boot-start
+
+     * WHY boot-start: Without this, Splunk stops running every time the VM
+       restarts. Enabling boot-start registers Splunk as a system service so
+       it comes back online automatically — important if the VM reboots during
+       patching or after an Azure maintenance event.
+
+2.3  Open the Splunk web UI:
+
+     In your browser navigate to: http://<SPLUNK_VM_PUBLIC_IP>:8000
+     Log in with the admin credentials you set in step 2.2.
+
+     * You are now looking at the same interface a SOC analyst uses in a real
+       Splunk deployment. All searching, dashboards, and alerts are managed here.
+
+2.4  Configure Splunk to receive forwarded logs (port 9997):
+
+     Settings (top nav) → Forwarding and Receiving
+       → Configure Receiving → New Receiving Port → enter 9997 → Save
+
+     * WHY this step: By default Splunk does not accept incoming data from
+       external sources. This setting opens the receiving channel — Splunk now
+       listens on port 9997 for log data from Universal Forwarders.
+       Without this, DC01's forwarder will connect but Splunk will refuse it.
+
+     VERIFY: Settings → Forwarding and Receiving → Configure Receiving
+     Port 9997 should appear as an active receiving port.
+
+2.5  Create the windows_logs index:
+
+     Settings → Indexes → Create New Index → Name: windows_logs → Save
+
+     * WHY a dedicated index: Splunk stores events in named indexes. By creating
+       a dedicated windows_logs index, you separate Windows Event Log data from
+       any other data sources you might add later. This makes searches faster,
+       lets you control how long data is retained, and mirrors how enterprise
+       Splunk deployments are organised — one index per major data source.
+     * The index name must match exactly what inputs.conf specifies on DC01
+       in Step 3. If they do not match, logs land in the default index and
+       your searches using index=windows_logs will return nothing.
+
+================================================================================
+STEP 3 — CONFIGURE THE UNIVERSAL FORWARDER ON DC01
+================================================================================
+
+PURPOSE
+  Install the Splunk Universal Forwarder on DC01 and configure it to collect
+  Security, System, and Application Windows Event Logs and forward them to the
+  Splunk Ubuntu VM over port 9997.
+
+BACKGROUND
+  The Universal Forwarder is a lightweight agent — about 20 MB — designed to
+  run invisibly in the background on production servers. It does three things:
+  monitors Windows Event Log channels, compresses and encrypts the data, and
+  ships it to the Splunk indexer. It uses very little CPU and RAM.
+
+  This is the standard enterprise architecture for Splunk. Every server in an
+  organisation — domain controllers, web servers, workstations — runs the
+  Universal Forwarder. Logs from all of them converge at a central Splunk
+  indexer, giving the SOC a single searchable view across the whole environment.
+
+  DO ALL STEPS IN THIS SECTION ON DC01, NOT ON THE UBUNTU VM.
+
+3.1  Download the Universal Forwarder on DC01:
+
+     - RDP into DC01 from your local machine
+       (Start → mstsc → enter DC01 public IP → log in with $ADMIN credentials)
+     - Open a browser on DC01
+     - Go to: https://splunk.com/en_us/download/universal-forwarder.html
+     - Download: Windows 64-bit installer (.msi)
+
+     * WHY a separate download: The Universal Forwarder is a different product
+       from Splunk Enterprise. It is stripped down — no indexing, no web UI,
+       no search capability. It only forwards. This keeps its resource footprint
+       minimal on the servers it runs on.
+
+3.2  Install the Universal Forwarder:
+
+     - Run the .msi installer
+     - When prompted for Deployment Server:
+         IP: <Splunk VM PRIVATE IP>   Port: 8089
+     - When prompted for Receiving Indexer:
+         IP: <Splunk VM PRIVATE IP>   Port: 9997
+     - Complete with default settings
+
+     * Deployment Server (port 8089): An optional central management server
+       that can push configuration updates to forwarders. We point it at
+       Splunk itself so configurations can be managed centrally later.
+     * Receiving Indexer (port 9997): The address the forwarder sends logs to.
+       This must be the PRIVATE IP, not the public IP. Private IP traffic
+       stays inside the Azure VNet — faster, free, and never exposed publicly.
+
+3.3  Create inputs.conf to define which logs to collect:
+
+     PURPOSE: inputs.conf is the configuration file that tells the Universal
+     Forwarder exactly which Windows Event Log channels to monitor and where
+     to send the data. Without this file, the forwarder is connected but
+     collecting nothing.
+
+     File location on DC01 (this path must be exact):
+     C:\Program Files\SplunkUniversalForwarder\etc\system\local\inputs.conf
+
+     If the "local" folder does not exist, create it.
+     Open Notepad as Administrator and save the file to this path.
+
+     -----------------------------------------------------------------------
+     [WinEventLog://Security]
+     disabled = 0
+     index = windows_logs
+     start_from = oldest
+     current_only = 0
+     evt_resolve_ad_obj = 1
+
+     [WinEventLog://System]
+     disabled = 0
+     index = windows_logs
+     start_from = oldest
+     current_only = 0
+
+     [WinEventLog://Application]
+     disabled = 0
+     index = windows_logs
+     start_from = oldest
+     current_only = 0
+     -----------------------------------------------------------------------
+
+     Key settings explained:
+     * [WinEventLog://Security]: Tells the forwarder to monitor the Windows
+       Security Event Log — the channel that records all logon events, logon
+       failures, and account lockouts. This is the primary log for security work.
+     * [WinEventLog://System] / [WinEventLog://Application]: System events
+       (service starts/stops, driver failures, reboots) and Application events
+       (software errors) provide supporting context during investigations.
+     * disabled = 0: Enables the source. Setting this to 1 temporarily pauses
+       collection without deleting the configuration.
+     * index = windows_logs: Routes events into the windows_logs index you
+       created in Step 2.5. Must match exactly — case-sensitive.
+     * start_from = oldest: Collects historical events that exist in the Event
+       Log before the forwarder was installed, not just new events going forward.
+       This means you can search events that happened before Splunk was set up.
+     * current_only = 0: Works with start_from = oldest to ensure backfill
+       of historical data.
+     * evt_resolve_ad_obj = 1: Resolves Active Directory Security Identifiers
+       (SIDs) into human-readable usernames. Without this setting, the
+       Account_Name field in Splunk shows S-1-5-21-... strings instead of
+       actual usernames, making searches and investigations much harder to read.
+
+3.4  Restart the forwarder to apply the inputs.conf changes:
+
+     Open PowerShell as Administrator on DC01 and run:
+     Restart-Service SplunkForwarder
+
+     * WHY restart: The forwarder reads inputs.conf on startup. Changes to the
+       file do not take effect until the service restarts. This is a one-time
+       step — after this, any future changes to inputs.conf also require a restart.
+
+3.5  Verify data is flowing:
+
+     In the Splunk Web UI search bar, run:
+       index=windows_logs | head 10
+
+     If results appear: the forwarder is connected and delivering logs.
+     If empty: check Services on DC01 — SplunkForwarder should show as Running.
+     Give it 1-2 minutes after the restart before searching — there is a brief
+     delay while the first batch of events is transmitted and indexed.
+
+================================================================================
+STEP 4 — ESSENTIAL SPL SEARCHES
+================================================================================
+
+PURPOSE
+  SPL (Splunk Processing Language) is the query language you use to ask Splunk
+  questions about your data. Every search in Splunk is an SPL query. Learning
+  SPL is the skill that separates analysts who actively find threats from those
+  who simply watch dashboards and wait for alerts to fire.
+
+BACKGROUND
+  SPL works as a pipeline: you start with a search to retrieve events, then
+  pass the results through commands that transform, filter, and format the data.
+  Each | (pipe) passes results from one command to the next, similar to a
+  pipeline in PowerShell or Bash.
+
+  Structure: index=<name> <filters> | command1 | command2 | command3
+
+  All searches below are run in the Search & Reporting app in Splunk.
+  Use the time picker (right side of the search bar) to set the time window.
+
+  KEY WINDOWS EVENT IDs USED IN THIS LAB:
+    4624 — Successful logon. Baseline for normal activity.
+    4625 — Failed logon. The primary indicator of brute force attempts.
+    4740 — Account locked out. Lockouts after repeated failures signal an attack.
+
+-----------------------------------------------------------------------
+4.1  CONFIRM DATA IS FLOWING
+-----------------------------------------------------------------------
+  PURPOSE: Before running any security searches, confirm logs are arriving.
+  This is always the first step when troubleshooting a Splunk deployment.
+
+  index=windows_logs | head 100
+
+  * index=windows_logs: Restricts the search to only the windows_logs index.
+    Without specifying an index, Splunk searches all indexes, which is slower.
+  * | head 100: Returns only the first 100 events. Used here as a quick sanity
+    check — we do not need all events, just confirmation that some exist.
+
+  Expected result: Recent Windows events from DC01 (logon events, service
+  messages, etc.). If empty, the forwarder is not delivering data — see the
+  Troubleshooting section.
+
+-----------------------------------------------------------------------
+4.2  FIND FAILED LOGIN ATTEMPTS — EventCode 4625
+-----------------------------------------------------------------------
+  PURPOSE: Identify accounts with failed login activity. This is one of the
+  most common searches a SOC analyst runs. A spike in failures for one account
+  is a brute force attack. Failures spread across many accounts is a password
+  spray attack.
+
+  index=windows_logs sourcetype=WinEventLog:Security EventCode=4625
+  | stats count by Account_Name, Workstation_Name
+  | sort -count
+
+  * sourcetype=WinEventLog:Security: Narrows results to the Security event log
+    only, excluding System and Application logs from the results.
+  * EventCode=4625: Filters to failed logon events only.
+  * | stats count by Account_Name, Workstation_Name: Counts events grouped
+    by both the target username and the source machine. This shows you not just
+    who is being targeted but where the attempts are coming from.
+  * | sort -count: Sorts results highest to lowest. The minus sign means
+    descending order. The most-targeted accounts appear at the top.
+
+  REAL-WORLD SIGNIFICANCE:
+    5+ failures for one account in a short window = investigate for brute force.
+    Failures from a single workstation against many usernames = password spray.
+    Failures for usernames that do not exist in AD = account enumeration.
+
+-----------------------------------------------------------------------
+4.3  FIND SUCCESSFUL LOGINS — EventCode 4624
+-----------------------------------------------------------------------
+  PURPOSE: Build a baseline of normal login behaviour. Understanding what is
+  normal is what makes abnormal activity visible. Successful logins after a
+  spike of 4625 failures are particularly suspicious.
+
+  index=windows_logs sourcetype=WinEventLog:Security EventCode=4624
+  | stats count by Account_Name, Logon_Type
+  | sort -count
+
+  * Logon_Type is a field inside the 4624 event that describes how the logon
+    occurred. This is critical context — not all logins are equal.
+
+  Logon_Type values and their meaning:
+    2  = Interactive     — someone at the keyboard on the machine
+    3  = Network         — accessing a file share or network resource
+    5  = Service         — automated service account login (expected, normal)
+    10 = Remote Interactive — RDP session
+
+  WHY THIS MATTERS: An RDP logon (Type 10) from an account that never uses RDP,
+  at 3am, after a string of 4625 failures, is a strong indicator of compromise.
+  Knowing the logon type is the difference between a finding and a false positive.
+
+-----------------------------------------------------------------------
+4.4  FIND ACCOUNT LOCKOUT EVENTS — EventCode 4740
+-----------------------------------------------------------------------
+  PURPOSE: Account lockouts are a trail of evidence. A single lockout is usually
+  a user who forgot their password. Multiple lockouts across different accounts
+  in a short window is a sign of an active password spray attack.
+
+  index=windows_logs sourcetype=WinEventLog:Security EventCode=4740
+  | table _time, Account_Name, Caller_Computer_Name
+  | sort -_time
+
+  * EventCode=4740: Filters to lockout events only.
+  * | table _time, Account_Name, Caller_Computer_Name: Displays results as a
+    clean table with three columns — timestamp, the locked account, and the
+    machine that triggered the lockout.
+  * _time: Splunk's internal timestamp field for every event.
+  * Caller_Computer_Name: The machine where the failed attempts originated.
+    This helps you answer: is this a user who keeps mistyping their password,
+    or is it an attacker's machine targeting multiple accounts?
+  * | sort -_time: Shows the most recent lockouts at the top.
+
+-----------------------------------------------------------------------
+4.5  TOP 10 FAILED LOGIN USERNAMES — THREAT HUNTING
+-----------------------------------------------------------------------
+  PURPOSE: Threat hunting means proactively searching for attackers before
+  an alert fires. This search surfaces the accounts under the most pressure
+  in the last 24 hours and is a standard first step in a morning threat hunt.
+
+  index=windows_logs sourcetype=WinEventLog:Security EventCode=4625 earliest=-24h
+  | stats count as failures by Account_Name
+  | sort -failures
+  | head 10
+
+  * earliest=-24h: Scopes the search to the last 24 hours only. Splunk
+    supports relative time modifiers: -24h, -7d, -30m, etc.
+  * count as failures: Counts events and renames the count column to
+    "failures" for readability in the results table.
+  * | head 10: Returns only the top 10 results after sorting — the ten
+    most-targeted usernames.
+
+  INDICATORS TO INVESTIGATE:
+    20+ failures in 24 hours for one account = investigate for brute force.
+    Failures targeting usernames not in Active Directory = account enumeration.
+    Many accounts each with a small number of failures = password spray (testing
+    one or two passwords per account to avoid lockout thresholds).
+
+-----------------------------------------------------------------------
+4.6  DETECT AFTER-HOURS LOGINS
+-----------------------------------------------------------------------
+  PURPOSE: Attackers often act during off-hours when fewer people are watching.
+  This search isolates logins that occurred outside business hours — a common
+  threat hunting query used in enterprise SOCs.
+
+  index=windows_logs sourcetype=WinEventLog:Security EventCode=4624
+  | eval hour=strftime(_time, "%H")
+  | where hour < 7 OR hour > 19
+  | table _time, Account_Name, Workstation_Name, Logon_Type
+  | sort -_time
+
+  * | eval hour=strftime(_time, "%H"): Creates a new field called "hour" by
+    extracting just the two-digit hour (00-23) from each event's timestamp.
+    strftime is a time-formatting function borrowed from the C programming
+    language — the same syntax works in Python, Bash, and many other languages.
+  * | where hour < 7 OR hour > 19: Keeps only events that occurred before
+    7am or after 7pm. Everything between those hours is dropped.
+  * | table ... | sort -_time: Displays the results as a clean table sorted
+    most-recent first.
+
+  WHAT TO LOOK FOR:
+    Service account logins (Logon_Type 5) after hours = normal and expected.
+    Interactive logins (Type 2) or RDP sessions (Type 10) from regular users
+    after hours = investigate. Compare against HR schedules or vacation calendars
+    to determine if the activity was authorised.
+
+================================================================================
+STEP 5 — BUILD THE SECURITY DASHBOARD
+================================================================================
+
+PURPOSE
+  A dashboard gives you a persistent, visual view of your security posture that
+  updates automatically. Instead of running searches manually every morning, you
+  open one page and see the current state across four key security indicators.
+  This is how real SOC tier-1 analysts start their shift.
+
+BACKGROUND
+  Dashboards in Splunk are collections of saved searches displayed as visual
+  panels — charts, tables, counters, and timelines. Each panel runs its search
+  on a schedule and refreshes automatically. A well-designed dashboard lets an
+  analyst spot anomalies at a glance without writing a single SPL query.
+
+5.1  Create the dashboard:
+
+     Dashboards (top nav) → Create New Dashboard
+     Name: Windows Security Overview
+     Click: Create Dashboard
+
+5.2  Add 4 panels — click "Add Panel" for each one:
+
+     PANEL 1 — Failed Logins (Last 24h)
+       WHY: Failed logins are the first indicator of brute force activity.
+            Watching this count in real time lets you catch an attack as it starts.
+       Search:
+         index=windows_logs sourcetype=WinEventLog:Security EventCode=4625
+         | stats count by Account_Name
+       Visualization: Bar chart   Time range: Last 24 hours
+
+     PANEL 2 — Account Lockouts (Last 7d)
+       WHY: A spike in lockouts indicates an attacker hit the threshold. This
+            panel shows you a running record of locked accounts over the week.
+       Search:
+         index=windows_logs sourcetype=WinEventLog:Security EventCode=4740
+         | table _time, Account_Name, Caller_Computer_Name
+       Visualization: Events list   Time range: Last 7 days
+
+     PANEL 3 — Login Activity Over Time
+       WHY: This panel shows login volume as a timeline. A sudden spike during
+            off-hours stands out immediately on a line chart, even before you
+            look at individual events.
+       Search:
+         index=windows_logs sourcetype=WinEventLog:Security EventCode=4624
+         | timechart count
+       Visualization: Line chart   Time range: Last 24 hours
+
+     PANEL 4 — Top Source Machines — After Hours
+       WHY: If a specific workstation is generating after-hours login activity,
+            this panel surfaces it. A compromised machine often generates
+            automated login attempts at all hours.
+       Search:
+         index=windows_logs sourcetype=WinEventLog:Security EventCode=4624
+         | eval hour=strftime(_time, "%H")
+         | where hour < 7 OR hour > 19
+         | stats count by Workstation_Name
+         | sort -count
+       Visualization: Column chart   Time range: Last 7 days
+
+5.3  Save the dashboard.
+
+     Take a screenshot of the populated dashboard — this is portfolio evidence
+     of hands-on SIEM experience. Write one sentence for each panel describing
+     what it shows and why it matters.
+
+================================================================================
+STEP 6 — CREATE AN AUTOMATED BRUTE FORCE ALERT
+================================================================================
+
+PURPOSE
+  Alerts are what turn a SIEM from a search tool into a detection platform.
+  Instead of checking the dashboard every 15 minutes yourself, Splunk runs the
+  search on a schedule and fires the alert automatically when conditions are met.
+  This is how real SOC detection works — the SIEM watches 24/7 so analysts do not.
+
+BACKGROUND
+  A scheduled alert in Splunk runs a saved search on a defined interval. If the
+  search returns results, Splunk triggers an action — adding to the triggered
+  alerts list, sending an email, calling a webhook, or creating a ticket in a
+  ticketing system. Alert quality is everything: an alert that fires too
+  broadly creates alert fatigue (analysts stop paying attention). An alert
+  that is too narrow misses real threats. Threshold tuning is an ongoing process.
+
+6.1  Test the search first — run it in the search bar to confirm it returns results:
+
+     index=windows_logs sourcetype=WinEventLog:Security EventCode=4625
+     | stats count as failures by Account_Name
+     | where failures > 10
+
+     * | where failures > 10: Filters to only accounts with more than 10 failed
+       logins in the search window. Any account crossing this threshold in a
+       15-minute window is a strong brute force indicator.
+
+     If no results: generate test events by intentionally typing the wrong
+     password 10+ times on DC01 for any user account, then re-run the search.
+
+6.2  Save as an alert:
+     Click: Save As → Alert
+
+6.3  Configure the alert:
+
+     Name            : Potential Brute Force — High Failure Count
+     Alert type      : Scheduled
+     Run every       : 15 minutes
+     Trigger condition: Number of Results is greater than 0
+     Trigger actions : Add to Triggered Alerts
+
+     * Scheduled vs Real-Time: Scheduled alerts run at fixed intervals and are
+       less resource-intensive. Real-time alerts evaluate every event as it
+       arrives — use real-time only for critical, high-priority detections.
+     * Run every 15 minutes: Balances detection speed with resource usage.
+       In a real SOC, brute force windows are short — attackers often lock
+       accounts and move on within minutes. 15 minutes catches most cases.
+     * Number of Results > 0: Since the search already applies the
+       | where failures > 10 filter, any result is already a finding.
+       This trigger fires the alert the moment at least one account crosses
+       the threshold.
+
+6.4  Click Save.
+
+6.5  Verify the alert is active:
+     Settings → Searches, Reports, and Alerts
+     Your alert should appear with Status: Enabled.
+
+     Take a screenshot of this settings page showing the alert enabled —
+     this is direct evidence of SIEM detection engineering experience.
+
+================================================================================
+VERIFICATION CHECKLIST
+================================================================================
+
+Before considering this lab complete, confirm each item independently:
+
+  [ ] index=windows_logs | head 10 returns recent events from DC01
+        If empty: check SplunkForwarder service on DC01 is Running
+
+  [ ] EventCode=4625 search returns results
+        If empty: type the wrong password on DC01 several times, then re-search
+
+  [ ] EventCode=4740 search returns results
+        If empty: fail logins enough times to trigger an account lockout
+
+  [ ] EventCode=4624 search returns results with multiple Logon_Type values
+
+  [ ] After-hours search returns the correct subset of events
+        Verify the time filter is working — check a result's _time value
+
+  [ ] "Windows Security Overview" dashboard shows all 4 panels populated
+        Take a screenshot for your portfolio
+
+  [ ] Alert "Potential Brute Force" shows as Enabled
+        Settings → Searches, Reports, and Alerts
+        Take a screenshot for your portfolio
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+ISSUE: index=windows_logs returns no results
+FIX  : On DC01 → Services → confirm SplunkForwarder is Running
+       On DC01 → confirm inputs.conf is saved at the exact path:
+         C:\Program Files\SplunkUniversalForwarder\etc\system\local\inputs.conf
+       On Splunk VM → Settings → Forwarding and Receiving → Configure Receiving
+         → verify port 9997 is listed
+       Check NSG rules allow port 9997 from 10.0.0.0/16 (VNet CIDR)
+       Wait 2 minutes after restarting the forwarder before re-searching
+
+ISSUE: wget returns 404 when downloading Splunk
+FIX  : The URL changes with every Splunk release. Log into splunk.com,
+       go to Free Trials and Downloads, select Linux .deb, and copy the
+       wget command shown on that page for the current version.
+
+ISSUE: SSH shows "Connection refused" on port 22
+FIX  : Verify the VM is running: az vm show -g $RG -n splunk-vm -d --query powerState
+       Verify the NSG inbound rule for port 22 allows your current public IP
+       Your IP may have changed since deployment — check whatismyip.com and
+       update the NSG source IP if needed
+
+ISSUE: Splunk web UI not loading on port 8000
+FIX  : Verify the NSG inbound rule for port 8000 allows your IP
+       SSH into the VM and check Splunk status:
+         sudo /opt/splunk/bin/splunk status
+       If stopped, start it:
+         sudo /opt/splunk/bin/splunk start
+
+ISSUE: Usernames show as S-1-5-... SID strings instead of names
+FIX  : Verify evt_resolve_ad_obj = 1 is in the [WinEventLog://Security] stanza
+       in inputs.conf on DC01
+       Then run: Restart-Service SplunkForwarder
+
+ISSUE: Events land in a different index, not windows_logs
+FIX  : Verify index = windows_logs is set under every stanza in inputs.conf
+       Verify the windows_logs index was created in Splunk (Settings → Indexes)
+       Both must match exactly — the setting is case-sensitive
+
+================================================================================
+NOTES
+================================================================================
+
+- The Splunk free licence auto-converts after 60 days. No action needed.
+  You keep full functionality — only the daily ingest cap (500 MB) applies.
+
+- Port 9997 should NEVER be open to 0.0.0.0/0. Always restrict forwarder
+  input to the VNet CIDR only, as done in Step 0.4.
+
+- Alert thresholds (failures > 10) are starting points. In a production
+  environment you tune these based on observed false positive rates over time.
+  An account with a bad saved password might generate 50 failures per day
+  legitimately — knowing your environment's baseline is the key to good alerts.
+
+- If you do not have Lab 1 DC01 set up yet: Splunk includes built-in sample
+  data. Go to Search → Data Summary to find sample indexes and complete the
+  SPL search and dashboard exercises while you build Lab 1.
+
+================================================================================
+END OF RUNBOOK
+================================================================================

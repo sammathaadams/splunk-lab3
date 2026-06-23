@@ -1,0 +1,171 @@
+<svg viewBox="0 0 920 640" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Arial, sans-serif">
+  <defs>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#34a853"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#9c27b0"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4285f4"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="920" height="640" fill="#f4f6fb" rx="12"/>
+
+  <!-- Title -->
+  <text x="460" y="36" text-anchor="middle" font-size="18" font-weight="700" fill="#1a2340">Lab 3 — Splunk SIEM &amp; Log Analysis</text>
+  <text x="460" y="56" text-anchor="middle" font-size="12" fill="#5a6a8a">Ubuntu 22.04 · Standard_B2s · Splunk Enterprise 10.x · Windows Event Logs → index: windows_logs</text>
+
+  <!-- Azure Cloud Boundary -->
+  <rect x="20" y="72" width="620" height="550" rx="14" fill="#e8f0fe" stroke="#4285f4" stroke-width="2" stroke-dasharray="8,4"/>
+  <text x="44" y="96" font-size="13" font-weight="700" fill="#4285f4">☁  Microsoft Azure</text>
+
+  <!-- Resource Group box -->
+  <rect x="38" y="108" width="584" height="498" rx="10" fill="#dce8fd" stroke="#5a9cf5" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="56" y="128" font-size="11" font-weight="700" fill="#1a73e8">Resource Group: rg-lab03-0626</text>
+
+  <!-- VNet box -->
+  <rect x="56" y="140" width="548" height="452" rx="8" fill="#c8ddfb" stroke="#4285f4" stroke-width="1.5" stroke-dasharray="5,3"/>
+  <text x="74" y="160" font-size="11" font-weight="700" fill="#1a73e8">Virtual Network: splunk-lab3-vnet  (10.0.0.0/16)</text>
+
+  <!-- NSG badge -->
+  <rect x="74" y="168" width="264" height="56" rx="6" fill="white" stroke="#ea4335" stroke-width="1.5"/>
+  <text x="86" y="186" font-size="11" font-weight="700" fill="#ea4335">🛡  NSG: splunk-lab3-nsg</text>
+  <text x="86" y="202" font-size="10" fill="#444">Port 22 (SSH) — your IP only</text>
+  <text x="86" y="216" font-size="10" fill="#444">Port 8000 (Web UI) — your IP only  |  Port 9997 — VNet only</text>
+
+  <!-- DC01 Windows VM box -->
+  <rect x="74" y="238" width="240" height="138" rx="8" fill="white" stroke="#34a853" stroke-width="2"/>
+  <rect x="74" y="238" width="240" height="28" rx="8" fill="#34a853"/>
+  <rect x="74" y="254" width="240" height="12" fill="#34a853"/>
+  <text x="194" y="257" text-anchor="middle" font-size="11" font-weight="700" fill="white">🖥  DC01 — Windows Server (Lab 1)</text>
+  <text x="86" y="285" font-size="10" font-weight="700" fill="#1a2340">Role:</text>
+  <text x="130" y="285" font-size="10" fill="#444">Active Directory Domain Controller</text>
+  <text x="86" y="300" font-size="10" font-weight="700" fill="#1a2340">Logs:</text>
+  <text x="130" y="300" font-size="10" fill="#444">Security · System · Application</text>
+  <text x="86" y="315" font-size="10" font-weight="700" fill="#1a2340">Event IDs:</text>
+  <text x="145" y="315" font-size="10" fill="#444">4624 · 4625 · 4740</text>
+  <text x="86" y="330" font-size="10" font-weight="700" fill="#1a2340">Agent:</text>
+  <text x="130" y="330" font-size="10" fill="#444">Splunk Universal Forwarder</text>
+  <text x="86" y="345" font-size="10" font-weight="700" fill="#1a2340">Config:</text>
+  <text x="130" y="345" font-size="10" fill="#444">inputs.conf → port 9997 encrypted</text>
+  <text x="86" y="360" font-size="10" font-weight="700" fill="#1a2340">Size:</text>
+  <text x="130" y="360" font-size="10" fill="#444">Standard_D2s_v3 · WS2025 DC x64 Gen2</text>
+
+  <!-- Arrow DC01 → Splunk (vertical) -->
+  <line x1="194" y1="376" x2="194" y2="408" stroke="#34a853" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowGreen)"/>
+  <text x="210" y="396" font-size="9" fill="#34a853">port 9997 · encrypted</text>
+
+  <!-- Splunk Indexer VM box -->
+  <rect x="74" y="410" width="240" height="154" rx="8" fill="white" stroke="#fbbc04" stroke-width="2"/>
+  <rect x="74" y="410" width="240" height="28" rx="8" fill="#fbbc04"/>
+  <rect x="74" y="426" width="240" height="12" fill="#fbbc04"/>
+  <text x="194" y="429" text-anchor="middle" font-size="11" font-weight="700" fill="white">📊  Splunk Indexer VM</text>
+  <text x="86" y="457" font-size="10" font-weight="700" fill="#1a2340">OS:</text>
+  <text x="130" y="457" font-size="10" fill="#444">Ubuntu 22.04 LTS</text>
+  <text x="86" y="472" font-size="10" font-weight="700" fill="#1a2340">Size:</text>
+  <text x="130" y="472" font-size="10" fill="#444">Standard_B2s (2 vCPU · 4 GB RAM)</text>
+  <text x="86" y="487" font-size="10" font-weight="700" fill="#1a2340">Splunk:</text>
+  <text x="140" y="487" font-size="10" fill="#444">Enterprise 10.x · Free licence</text>
+  <text x="86" y="502" font-size="10" font-weight="700" fill="#1a2340">Ingest:</text>
+  <text x="140" y="502" font-size="10" fill="#444">500 MB/day (free tier)</text>
+  <text x="86" y="517" font-size="10" font-weight="700" fill="#1a2340">Index:</text>
+  <text x="130" y="517" font-size="10" fill="#444">windows_logs</text>
+  <text x="86" y="532" font-size="10" font-weight="700" fill="#1a2340">Web UI:</text>
+  <text x="140" y="532" font-size="10" fill="#444">http://&lt;VM-IP&gt;:8000</text>
+  <text x="86" y="547" font-size="10" font-weight="700" fill="#1a2340">Disk:</text>
+  <text x="130" y="547" font-size="10" fill="#444">30 GB minimum</text>
+
+  <!-- Arrow Splunk → right panel area -->
+  <line x1="314" y1="490" x2="380" y2="490" stroke="#34a853" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowGreen)"/>
+  <text x="320" y="483" font-size="9" fill="#34a853">parsed &amp; stored</text>
+
+  <!-- SPL Search panel (inside VNet, right side) -->
+  <rect x="382" y="238" width="210" height="326" rx="8" fill="white" stroke="#4285f4" stroke-width="1.5"/>
+  <rect x="382" y="238" width="210" height="28" rx="8" fill="#4285f4"/>
+  <rect x="382" y="254" width="210" height="12" fill="#4285f4"/>
+  <text x="487" y="257" text-anchor="middle" font-size="11" font-weight="700" fill="white">🔍  Splunk Web UI — SPL</text>
+  <text x="394" y="285" font-size="9" font-weight="700" fill="#1a2340">Search &amp; Reporting App</text>
+  <text x="394" y="300" font-size="8.5" fill="#444">index=windows_logs | head 100</text>
+  <text x="394" y="316" font-size="9" font-weight="700" fill="#1a2340">Failed Logins (4625)</text>
+  <text x="394" y="330" font-size="8" fill="#444">EventCode=4625 | stats count</text>
+  <text x="394" y="342" font-size="8" fill="#444">by Account_Name | sort -count</text>
+  <text x="394" y="358" font-size="9" font-weight="700" fill="#1a2340">Account Lockouts (4740)</text>
+  <text x="394" y="372" font-size="8" fill="#444">EventCode=4740 | table _time,</text>
+  <text x="394" y="384" font-size="8" fill="#444">Account_Name, Caller_Computer_Name</text>
+  <text x="394" y="400" font-size="9" font-weight="700" fill="#1a2340">After-Hours Logins</text>
+  <text x="394" y="414" font-size="8" fill="#444">EventCode=4624 | eval hour=</text>
+  <text x="394" y="426" font-size="8" fill="#444">strftime(_time,"%H") | where</text>
+  <text x="394" y="438" font-size="8" fill="#444">hour&lt;7 OR hour&gt;19</text>
+  <text x="394" y="454" font-size="9" font-weight="700" fill="#1a2340">Dashboard: Windows Security Overview</text>
+  <text x="394" y="468" font-size="8" fill="#444">Failed Logins · Lockouts · Login Trend</text>
+  <text x="394" y="482" font-size="9" font-weight="700" fill="#1a2340">Alert: Brute Force Detection</text>
+  <text x="394" y="496" font-size="8" fill="#444">failures &gt; 10 · runs every 15 min</text>
+  <text x="394" y="510" font-size="8" fill="#444">→ Add to Triggered Alerts</text>
+  <text x="394" y="528" font-size="8.5" fill="#777">Port 8000 · HTTP</text>
+  <text x="394" y="541" font-size="8.5" fill="#777">Accessible via browser</text>
+  <text x="394" y="554" font-size="8.5" fill="#777">Free licence: 500 MB/day</text>
+
+  <!-- Right-side panels -->
+  <!-- Subscription panel -->
+  <rect x="656" y="72" width="248" height="90" rx="8" fill="white" stroke="#fbbc04" stroke-width="2"/>
+  <rect x="656" y="72" width="248" height="26" rx="8" fill="#fbbc04"/>
+  <rect x="656" y="86" width="248" height="12" fill="#fbbc04"/>
+  <text x="780" y="89" text-anchor="middle" font-size="11" font-weight="700" fill="white">☁  Azure Subscription</text>
+  <text x="668" y="115" font-size="10" font-weight="700" fill="#1a2340">Plan:</text>
+  <text x="705" y="115" font-size="10" fill="#444">Azure Free / Pay-As-You-Go</text>
+  <text x="668" y="130" font-size="10" font-weight="700" fill="#1a2340">Cost:</text>
+  <text x="705" y="130" font-size="10" fill="#444">$0 — Splunk Free licence</text>
+  <text x="668" y="145" font-size="10" font-weight="700" fill="#1a2340">Deployed:</text>
+  <text x="730" y="145" font-size="10" fill="#444">June 2026</text>
+
+  <!-- Admin Workstation panel -->
+  <rect x="656" y="178" width="248" height="106" rx="8" fill="white" stroke="#9c27b0" stroke-width="2"/>
+  <rect x="656" y="178" width="248" height="26" rx="8" fill="#9c27b0"/>
+  <rect x="656" y="192" width="248" height="12" fill="#9c27b0"/>
+  <text x="780" y="195" text-anchor="middle" font-size="11" font-weight="700" fill="white">💻  SOC Analyst Workstation</text>
+  <text x="668" y="222" font-size="10" font-weight="700" fill="#1a2340">SSH to Splunk:</text>
+  <text x="750" y="222" font-size="10" fill="#444">PowerShell SSH</text>
+  <text x="668" y="237" font-size="10" font-weight="700" fill="#1a2340">Web UI access:</text>
+  <text x="756" y="237" font-size="10" fill="#444">Browser → :8000</text>
+  <text x="668" y="252" font-size="10" font-weight="700" fill="#1a2340">RDP to DC01:</text>
+  <text x="748" y="252" font-size="10" fill="#444">Azure Bastion / RDP</text>
+  <text x="668" y="267" font-size="10" font-weight="700" fill="#1a2340">Tasks:</text>
+  <text x="705" y="267" font-size="10" fill="#444">SPL searches · dashboards</text>
+
+  <!-- GitHub Repo panel -->
+  <rect x="656" y="300" width="248" height="90" rx="8" fill="white" stroke="#333" stroke-width="2"/>
+  <rect x="656" y="300" width="248" height="26" rx="8" fill="#333"/>
+  <rect x="656" y="314" width="248" height="12" fill="#333"/>
+  <text x="780" y="317" text-anchor="middle" font-size="11" font-weight="700" fill="white">🐙  GitHub Repository</text>
+  <text x="668" y="344" font-size="10" font-weight="700" fill="#1a2340">Repo:</text>
+  <text x="700" y="344" font-size="10" fill="#444">splunk-lab3</text>
+  <text x="668" y="359" font-size="10" font-weight="700" fill="#1a2340">Files:</text>
+  <text x="700" y="359" font-size="10" fill="#444">README · SOP · scripts/</text>
+  <text x="668" y="374" font-size="10" font-weight="700" fill="#1a2340">Screenshots:</text>
+  <text x="745" y="374" font-size="10" fill="#444">dashboard · alert config</text>
+
+  <!-- Cert Alignment panel -->
+  <rect x="656" y="406" width="248" height="108" rx="8" fill="white" stroke="#ea4335" stroke-width="2"/>
+  <rect x="656" y="406" width="248" height="26" rx="8" fill="#ea4335"/>
+  <rect x="656" y="420" width="248" height="12" fill="#ea4335"/>
+  <text x="780" y="423" text-anchor="middle" font-size="11" font-weight="700" fill="white">🎓  Certification Alignment</text>
+  <text x="668" y="450" font-size="10" font-weight="700" fill="#1a2340">CompTIA Security+</text>
+  <text x="668" y="464" font-size="10" fill="#444">Log management · Threat detection</text>
+  <text x="668" y="479" font-size="10" font-weight="700" fill="#1a2340">CySA+</text>
+  <text x="668" y="493" font-size="10" fill="#444">SIEM operations · Incident analysis</text>
+  <text x="668" y="508" font-size="10" font-weight="700" fill="#1a2340">Splunk Core Certified User</text>
+  <text x="668" y="522" font-size="10" fill="#444">SPL · dashboards · alerts</text>
+
+  <!-- Arrows: Workstation → Splunk Web UI -->
+  <line x1="656" y1="231" x2="596" y2="420" stroke="#9c27b0" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowPurple)"/>
+
+  <!-- Arrow Workstation → DC01 (RDP) -->
+  <line x1="656" y1="245" x2="318" y2="310" stroke="#9c27b0" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrowPurple)"/>
+
+  <!-- Data flow label at bottom -->
+  <rect x="38" y="598" width="584" height="16" rx="4" fill="none"/>
+  <text x="46" y="611" font-size="9" fill="#5a6a8a">Data flow: DC01 Windows Logs → Universal Forwarder → port 9997 → Splunk Indexer → windows_logs index → SPL Search → Dashboard / Alert</text>
+</svg>
