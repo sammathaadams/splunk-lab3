@@ -1,29 +1,33 @@
 # Lab 3 — Splunk SIEM & Log Analysis
 
-**Splunk Free · Azure VM · SOC Skills · Security Monitoring**
+## Overview
 
-| Field | Value |
-|---|---|
-| Certification Alignment | CompTIA Security+ · CySA+ · Splunk Core Certified User |
-| Tools Used | Splunk Enterprise (free) · Azure Ubuntu VM · Universal Forwarder |
-| Time to Complete | 4–6 hours across multiple sessions |
-| Estimated Cost | $0 — Splunk Free licence (500 MB/day) covers everything |
-| Career Relevance | SOC Analyst (Tier 1–3) · Security Engineer · Incident Responder |
+This lab demonstrates an end-to-end Splunk SIEM deployment on Microsoft Azure, covering log ingestion from a Windows Server domain controller, SPL query writing, security dashboard construction, and automated brute-force detection alerting — reflecting real-world SOC analyst workflows.
+
+**Splunk Version:** Enterprise 10.x — 60-day trial, then permanently free at 500 MB/day  
+**Platform:** Microsoft Azure — Ubuntu 22.04 (Splunk Indexer) · Windows Server 2025 (DC01 log source)  
+**Log Source:** Splunk Universal Forwarder on DC01 → Security, System, Application Event Logs  
+**Certification Alignment:** CompTIA Security+ · CySA+ · Splunk Core Certified User
 
 ---
 
-## The Business Problem This Lab Solves
+## Business Context
 
-A medium-sized organization generates millions of log events every day — Windows Event Logs from workstations, authentication logs from Active Directory, firewall logs from network equipment, and cloud resource logs. Without a SIEM, those logs sit in separate systems with no way to search across them, correlate events, or identify patterns that indicate an attack.
+A medium-sized organization generates millions of log events every day — authentication events from Active Directory, service starts and stops from Windows servers, and application errors across the environment. Without a SIEM, those logs sit in separate systems with no way to search across them, correlate events, or detect attack patterns automatically.
 
-The SIEM is the SOC's primary tool. When an alert fires, the analyst opens the SIEM and searches logs to understand what happened, when, from where, and what was affected. Splunk is the most widely deployed commercial SIEM. Demonstrating hands-on Splunk experience in a lab environment is concrete, verifiable evidence of SOC readiness — this skill appears on job descriptions for almost every security operations role.
+The SIEM is the SOC's primary tool. When an alert fires, the analyst opens the SIEM and searches logs to build a timeline: what happened, when, from where, and what was affected. Splunk is the most widely deployed commercial SIEM in enterprise environments. Hands-on Splunk experience — writing SPL, building dashboards, configuring scheduled alerts — appears on job descriptions for nearly every SOC Analyst and Security Engineer role.
 
-| Role | How This Lab Applies |
-|---|---|
-| SOC Analyst Tier 1 | Monitoring dashboards, searching logs for suspicious activity, escalating findings |
-| SOC Analyst Tier 2–3 | Building detection rules, correlating events across data sources, threat hunting |
-| Cloud Security Engineer | Microsoft Sentinel and AWS Security Hub use the same SIEM concepts — this lab teaches the mental model |
-| Incident Responder | Searching logs during an active incident, building a timeline, identifying scope of compromise |
+This lab also demonstrates the Universal Forwarder architecture used in real enterprise Splunk deployments: a lightweight agent installed on every server ships logs to a central indexer, giving the SOC a single searchable view across the entire environment.
+
+---
+
+## Prerequisites
+
+- Azure subscription with permissions to create Resource Groups, VMs, VNets, and NSGs
+- Azure CLI installed locally (`az --version` to verify) and authenticated (`az account show`)
+- GitHub CLI installed locally (`gh --version` to verify) and authenticated (`gh auth status`)
+- Splunk account (free — use [temp-mail.org](https://temp-mail.org/en/) to register)
+- Windows PowerShell for SSH to the Ubuntu VM (built-in on Windows 10/11 — no extra install needed)
 
 ---
 
@@ -31,103 +35,55 @@ The SIEM is the SOC's primary tool. When an alert fires, the analyst opens the S
 
 ![Architecture Diagram](screenshots/architecture.svg)
 
-This lab uses two Azure VMs in the same virtual network. The Windows Server DC01 from Lab 1 runs the Splunk Universal Forwarder, which ships Windows Event Logs to a second Ubuntu VM running Splunk Enterprise. Splunk indexes the logs into the `windows_logs` index, making them searchable through the web UI at port 8000.
-
 **Data flow:** DC01 Windows Event Logs → Universal Forwarder (port 9997, encrypted) → Splunk Indexer (Ubuntu 22.04) → `windows_logs` index → SPL searches → Dashboards & Alerts
 
-**DC01 Region:** US West 2 · **Architecture:** x64 · **Security:** Trusted Launch
-
-### Infrastructure
-
-| Component | Detail |
-|---|---|
-| Log Source | DC01 — Windows Server 2025 Datacenter x64 Gen2 (Lab 1 VM), Standard_D2s_v3 |
-| Splunk VM | Ubuntu 22.04 LTS, Standard_B2s (2 vCPU · 4 GB RAM), 30 GB disk |
-| Splunk Version | Enterprise 10.x — 60-day trial, then permanently free at 500 MB/day |
-| NSG Rules | Port 22 (SSH) — your IP only · Port 8000 (Web UI) — your IP only · Port 9997 (forwarder) — VNet only |
-| Resource Group | rg-lab03-0626 |
-
----
-
-## Screenshots
-
-> Add your screenshots here as you complete each step.
-
-### Architecture Diagram
-![Architecture](screenshots/architecture.svg)
-
-### Splunk Web UI — Search & Reporting
-![Splunk Search](screenshots/splunk-search-ui.png)
-
-### Failed Logins Dashboard Panel (EventCode 4625)
-![Failed Logins](screenshots/dashboard-failed-logins.png)
-
-### Account Lockout Events (EventCode 4740)
-![Account Lockouts](screenshots/dashboard-account-lockouts.png)
-
-### Windows Security Overview Dashboard
-![Dashboard](screenshots/dashboard-security-overview.png)
-
-### Automated Alert — Brute Force Detection
-![Alert Config](screenshots/alert-brute-force-config.png)
-
-### Universal Forwarder Connected (Data Flowing)
-![Forwarder Connected](screenshots/forwarder-data-flowing.png)
-
----
-
-## Key Concepts
-
-### What is a SIEM?
-SIEM (Security Information and Event Management) collects log data from across your entire environment and makes it searchable in one place. Its two core jobs: (1) **correlation** — connecting events across systems to reveal patterns no single source would show, and (2) **alerting** — automatically notifying analysts when suspicious conditions are met.
-
-### What is SPL?
-Splunk Processing Language (SPL) is the query language used to ask Splunk questions. It works as a pipeline — start with a search, then pipe results through commands that filter, transform, and visualize data. Example:
-
-```
-index=windows_logs EventCode=4625 | stats count by Account_Name | sort -count
-```
-
-### What is a Splunk Index?
-An index is a named storage bucket where events are kept. When logs arrive, they are stored in the specified index. This lab uses one index: `windows_logs`.
-
-### What is the Universal Forwarder?
-A lightweight agent installed on any machine whose logs you want to send to Splunk. It monitors Windows Event Logs, compresses and encrypts the data, and forwards it over port 9997. Designed to run invisibly in the background on production servers.
-
-### Key Windows Event IDs
-
-| Event Code | Meaning | SOC Significance |
+| Resource | Name | Detail |
 |---|---|---|
-| 4624 | Successful logon | Baseline for normal activity; look for off-hours or unusual logon types |
-| 4625 | Failed logon | Spike for one account = brute force; spread across many accounts = password spray |
-| 4740 | Account locked out | Trail of lockouts = password spray attack in progress |
+| Resource Group | `rg-lab03-0626` | Contains all lab resources |
+| Log Source VM | `DC01` | Windows Server 2025 Datacenter x64 Gen2, Standard_D2s_v3 |
+| Splunk Indexer VM | `splunk-vm` | Ubuntu 22.04 LTS, Standard_D2as_v4 |
+| Virtual Network | `splunk-lab3-vnet` | Shared VNet — private IP routing between VMs |
+| NSG — DC01 | `dc01-nsg` | Allows RDP (3389) from your IP only |
+| NSG — Splunk | `splunk-nsg` | Allows SSH (22) and Splunk UI (8000) from your IP · port 9997 from VNet only |
+
+> **What gets installed where:**  
+> Ubuntu VM → Splunk Enterprise (the SIEM — all indexing, searching, and alerting lives here)  
+> DC01 Windows Server → Splunk Universal Forwarder only (lightweight agent that ships Event Logs to Ubuntu VM)  
+> Your local machine → nothing (access everything via browser and PowerShell SSH)
 
 ---
 
-## What You Will Build
+## Steps
 
-- **Splunk Enterprise** deployed on Azure Ubuntu VM
-- **Universal Forwarder** on DC01 (Lab 1 Windows Server) shipping Security/System/Application logs
-- **`inputs.conf`** configuring which Windows Event Logs to collect
-- **5 SPL searches** covering failed logins, successful logins, lockouts, threat hunting, and after-hours detection
-- **"Windows Security Overview" dashboard** with 4 panels
-- **Automated alert** — fires every 15 minutes when any account has >10 failed logins
+### 1. Initialize the Project Repository
 
+Create the local project directory, initialize Git, and scaffold the folder structure.
+
+```powershell
+cd C:\Users\828co\OneDrive\Documents\Repos
+mkdir splunk-lab3
+cd splunk-lab3
+git init
+echo "# Lab 3 — Splunk SIEM & Log Analysis" > README.md
+mkdir scripts screenshots
+git add .
+git commit -m "initial commit: splunk lab3 project structure"
+gh repo create splunk-lab3 --public --source=. --remote=origin --push
+```
 ---
 
-## What Gets Installed Where
+### 2. Deploy Both VMs with Azure CLI
 
-| Location | What | Why |
-|---|---|---|
-| **Your local machine** | Nothing (Splunk-related) | You access everything through your browser and PowerShell SSH |
-| **Ubuntu VM** (new this lab) | Splunk Enterprise | This is the SIEM — logs are indexed, searched, and alerted here |
-| **DC01 Windows Server VM** | Splunk Universal Forwarder only | Lightweight agent that ships Windows Event Logs to the Ubuntu VM |
+VMs are torn down after each lab. Run these commands to rebuild the full environment from scratch.
 
----
+```powershell
+# Confirm you are logged into the correct Azure account
+az account show --query "{Name:name, SubscriptionId:id, State:state}" --output table
 
-## Step 0 — Deploy Both VMs with Azure CLI
-
-> VMs are torn down after each lab. Run these commands to rebuild everything from scratch.
+# If not logged in, or wrong account:
+az login
+az account set --subscription "<SubscriptionId or Name>"
+```
 
 ```powershell
 # Set variables — edit before running
@@ -136,7 +92,7 @@ $LOCATION = "westus2"
 $VNET     = "splunk-lab3-vnet"
 $SUBNET   = "lab3-subnet"
 $ADMIN    = "labadmin"
-$PASSWORD = "LabPass123!"   # change this
+$PASSWORD = "LabPass456!@#"   # change this
 
 # Resource group + VNet
 az group create --name $RG --location $LOCATION
@@ -147,10 +103,9 @@ az network vnet create `
   --subnet-name $SUBNET --subnet-prefix 10.0.1.0/24
 ```
 
-### Deploy DC01 (Windows Server 2025)
+**Deploy DC01 (Windows Server 2025)**
 
 ```powershell
-# NSG — RDP from your IP only (replace YOUR_PUBLIC_IP)
 az network nsg create --resource-group $RG --name dc01-nsg
 
 az network nsg rule create --resource-group $RG --nsg-name dc01-nsg `
@@ -158,24 +113,22 @@ az network nsg rule create --resource-group $RG --nsg-name dc01-nsg `
   --destination-port-ranges 3389 `
   --source-address-prefixes YOUR_PUBLIC_IP --access Allow
 
-# DC01 VM
 az vm create `
   --resource-group $RG --name DC01 `
-  --image Win2025Datacenter --size Standard_D2s_v3 `
+  --image "MicrosoftWindowsServer:WindowsServer:2025-datacenter-g2:latest" --size Standard_D2s_v3 `
   --vnet-name $VNET --subnet $SUBNET --nsg dc01-nsg `
   --admin-username $ADMIN --admin-password $PASSWORD `
   --location $LOCATION --security-type TrustedLaunch `
   --public-ip-sku Standard
 
-# Save this private IP — needed for forwarder config
+# Save DC01 private IP — needed for the forwarder config in Step 5
 az vm list-ip-addresses --resource-group $RG --name DC01 `
   --query "[].virtualMachine.network.privateIpAddresses[0]" --output tsv
 ```
 
-### Deploy Splunk VM (Ubuntu 22.04)
+**Deploy Splunk VM (Ubuntu 22.04)**
 
 ```powershell
-# NSG — SSH and Splunk UI from your IP; port 9997 from VNet only
 az network nsg create --resource-group $RG --name splunk-nsg
 
 az network nsg rule create --resource-group $RG --nsg-name splunk-nsg `
@@ -190,194 +143,215 @@ az network nsg rule create --resource-group $RG --nsg-name splunk-nsg `
   --name Allow-Forwarder-VNet --priority 1020 --protocol Tcp `
   --destination-port-ranges 9997 --source-address-prefixes 10.0.0.0/16 --access Allow
 
-# Splunk Ubuntu VM
 az vm create `
   --resource-group $RG --name splunk-vm `
-  --image Ubuntu2204 --size Standard_B2s `
+  --image Ubuntu2204 --size Standard_D2as_v4 `
   --vnet-name $VNET --subnet $SUBNET --nsg splunk-nsg `
   --admin-username $ADMIN --admin-password $PASSWORD `
   --location $LOCATION --public-ip-sku Standard
 
-# Save both IPs
+# Save both IPs — public for browser/SSH, private for forwarder
 az vm list-ip-addresses --resource-group $RG --name splunk-vm `
   --query "[].virtualMachine.network.{Public:publicIpAddresses[0].ipAddress,Private:privateIpAddresses[0]}" `
   --output table
 ```
 
-> **Public IP** → browser (`http://<IP>:8000`) and PowerShell SSH SSH  
-> **Private IP** → Universal Forwarder installer on DC01 (port 9997)
+![PowerShell — variables block set for the lab deployment](screenshots/01_azure-cli-variables-set.png)
 
-### Teardown when done
+![Azure CLI — resource group rg-lab03-0626 created in westus2](screenshots/02_azure-cli-resource-group-created.png)
 
-```powershell
-az group delete --name $RG --yes --no-wait
-```
+![Azure CLI — both VMs running, DC01 and splunk-vm with public IPs](screenshots/03_azure-cli-vms-deployed.png)
 
 ---
 
-## Step 1 — Get Splunk Free
+### 3. Create Splunk Account and Get the Download URL
+
+Nothing downloads to your local machine in this step. The installer is downloaded directly onto the Ubuntu VM in Step 4 via `wget`. This step exists only to get past Splunk's registration wall.
 
 1. Go to [splunk.com/en_us/download/splunk-enterprise.html](https://splunk.com/en_us/download/splunk-enterprise.html)
-2. Create a free account using a temporary email from [temp-mail.org](https://temp-mail.org/en/)
-3. Download **Splunk Enterprise for Linux** (.deb package)
-4. Follow steps in Step 2 below to install
+2. Register with a temporary email from [temp-mail.org](https://temp-mail.org/en/) — check the inbox there for the confirmation link
+3. Select **Linux → .deb package** — then **copy the `wget` command** shown on the page (do not click Download). You'll paste it on the Ubuntu VM in Step 4.
 
-> **Important:** You want **Splunk Enterprise** — not Splunk Cloud (hosted SaaS) and not Splunk SOAR.
+> You want **Splunk Enterprise** — not Splunk Cloud and not Splunk SOAR. The wget URL in Step 4 may be outdated — always use the one copied from the download page.
 
 ---
 
-## Step 2 — Deploy Splunk on Azure Ubuntu VM
+### 4. Install and Configure Splunk on the Ubuntu VM
 
-### Create the VM
+SSH into the Splunk VM from PowerShell on your local machine:
 
-| Setting | Value |
-|---|---|
-| OS | Ubuntu 22.04 LTS |
-| Size | Standard_D2s_v3 (2 vCPU · 8 GiB RAM) |
-| Disk | 30 GB |
-| NSG Inbound Ports | 8000 (Web UI) · 9997 (forwarder input) · 22 (SSH) |
+```powershell
+ssh labadmin@<SPLUNK_VM_PUBLIC_IP>
+```
+
+Type `yes` when prompted about the host fingerprint. No characters appear when typing the password — this is normal Linux behavior.
 
 ```bash
-# SSH into your Ubuntu VM, then run:
+# Paste the wget command copied from splunk.com (Linux .deb — NOT Windows .msi)
+# Do not use a hardcoded URL — Splunk updates versions frequently
+wget -O splunk-<version>-linux-amd64.deb \
+  "https://download.splunk.com/products/splunk/releases/<version>/linux/splunk-<version>-<hash>-linux-amd64.deb"
 
-# Download Splunk Enterprise (current version as of April 2026)
-wget -O splunk-10.2.2-linux-amd64.deb \
-  "https://download.splunk.com/products/splunk/releases/10.2.2/linux/splunk-10.2.2-80b90d638de6-linux-amd64.deb"
+# Install — wildcard matches whatever version you downloaded
+sudo dpkg -i splunk-*-linux-amd64.deb
 
-# NOTE: If this 404s, log into splunk.com → Free Trials and Downloads → Linux .deb
-# and copy the wget command shown on the download page.
-
-# Install
-sudo dpkg -i splunk-10.2.2-linux-amd64.deb
-
-# Start Splunk and set admin credentials when prompted
-sudo /opt/splunk/bin/splunk start --accept-license
+# Start Splunk — credentials may be prompted here or during enable boot-start
+# --run-as-root required in Splunk 9.x+ when using sudo
+sudo /opt/splunk/bin/splunk start --accept-license --answer-yes --run-as-root
 
 # Enable auto-start on reboot
 sudo /opt/splunk/bin/splunk enable boot-start
-
-# Access the web UI:
-# http://<YOUR_VM_PUBLIC_IP>:8000
 ```
 
-### Configure Receiving & Create Index
+Open the Splunk web UI in your browser: `http://<SPLUNK_VM_PUBLIC_IP>:8000`
 
-1. Log into the Splunk web UI at `http://<your-vm-ip>:8000`
-2. **Settings → Forwarding and Receiving → Configure Receiving → New Receiving Port → `9997` → Save**
-3. **Settings → Indexes → Create New Index → name it `windows_logs` → Save**
+![wget downloading Splunk 10.4.1 Linux .deb on the Ubuntu VM](screenshots/04_splunk-wget-download.png)
+
+![Splunk Enterprise login page at http://splunk-vm-ip:8000](screenshots/05_splunk-web-ui.png)
+
+**Configure receiving port and create the index:**
+
+1. **Settings → Forwarding and Receiving → Configure Receiving → New Receiving Port → `9997` → Save**
+2. **Settings → Indexes → Create New Index → Name: `windows_logs` → Save**
+
+![Settings → Configure Receiving — port 9997 active](screenshots/06_splunk-receiving-port-9997.png)
+
+![Settings → Indexes — windows_logs index created](screenshots/07_splunk-windows-logs-index.png)
 
 ---
 
-## Step 3 — Install Universal Forwarder on DC01
+### 5. Install Universal Forwarder on DC01
 
-> Do this on your **Windows Server VM from Lab 1** — not on the Splunk Ubuntu VM.
+RDP into DC01, then from a browser on DC01:
 
-1. On DC01, go to [splunk.com/en_us/download/universal-forwarder.html](https://splunk.com/en_us/download/universal-forwarder.html)
-2. Download the **Windows 64-bit installer**
-3. Run installer — when asked for Deployment Server: enter Splunk VM's **private IP** and port `8089`
-4. When asked for Receiving Indexer: Splunk VM's **private IP** and port `9997`
-5. Complete with default settings
+1. Go to [splunk.com/en_us/download/universal-forwarder.html](https://splunk.com/en_us/download/universal-forwarder.html)
+2. Download **Windows 64-bit installer (.msi)**
+3. Run the installer — when prompted:
+   - **Deployment Server:** Splunk VM private IP · port `8089`
+   - **Receiving Indexer:** Splunk VM private IP · port `9997`
+4. Complete with default settings
 
-### Configure inputs.conf
-
-Create/edit this file on DC01:
+**Create `inputs.conf` to define which logs to collect.** Open Notepad as Administrator on DC01 and save this file to the exact path:  
 `C:\Program Files\SplunkUniversalForwarder\etc\system\local\inputs.conf`
 
-See full file contents in [`scripts/inputs.conf`](scripts/inputs.conf).
+See the full file at [`scripts/inputs.conf`](scripts/inputs.conf). Then restart the forwarder:
 
 ```powershell
-# Restart the forwarder to apply changes (run as Administrator on DC01)
+# Run as Administrator on DC01
 Restart-Service SplunkForwarder
 ```
 
+Verify data is flowing — run this in the Splunk search bar:
+
+```
+index=windows_logs | head 10
+```
+
+![Universal Forwarder connected — index=windows_logs returns events from DC01](screenshots/08_forwarder-data-flowing.png)
+
 ---
 
-## Step 4 — Essential SPL Searches
+### 6. Run Essential SPL Searches
 
-See [`scripts/spl-searches.md`](scripts/spl-searches.md) for all searches with explanations.
+All searches run in the **Search & Reporting** app. See [`scripts/spl-searches.md`](scripts/spl-searches.md) for the full set with explanations.
 
 | Search | Purpose |
 |---|---|
 | `index=windows_logs \| head 100` | Confirm data is flowing |
-| `EventCode=4625 \| stats count by Account_Name` | Failed login attempts |
+| `EventCode=4625 \| stats count by Account_Name` | Failed login attempts — brute force indicator |
 | `EventCode=4624 \| stats count by Account_Name, Logon_Type` | Successful logins by type |
 | `EventCode=4740 \| table _time, Account_Name, Caller_Computer_Name` | Account lockouts |
-| `EventCode=4625 earliest=-24h \| stats count as failures \| head 10` | Top 10 failed usernames |
+| `EventCode=4625 earliest=-24h \| stats count as failures \| head 10` | Top 10 targeted usernames |
 | After-hours filter with `eval hour` | Logins outside 7am–7pm |
+
+![SPL search — EventCode=4625 failed logins, testuser and blank account with 30 failures each from DC01](screenshots/09_spl-search-4625-failed-logins.png)
+
+![SPL search — EventCode=4624 successful logins by Account_Name and Logon_Type](screenshots/10_spl-search-4624-successful-logins.png)
+
+![SPL search — EventCode=4740 account lockout, labadmin locked out from DC01](screenshots/11_spl-search-4740-lockout.png)
+
+![SPL search — top 10 failed logins in 24h, testuser 30 failures and labadmin 12](screenshots/12_spl-search-top10-failed-logins.png)
+
+![SPL search — after-hours logins with eval hour filter, 134 events returned](screenshots/13_spl-search-after-hours-logins.png)
 
 ---
 
-## Step 5 — Build the Security Dashboard
+### 7. Build the Security Dashboard
 
 1. **Dashboards → Create New Dashboard**
 2. Name: `Windows Security Overview` → Create Dashboard
-3. Add 4 panels:
+3. Add 4 panels using **Add Panel**:
 
-| Panel | SPL | Visualization |
+| Panel | Search | Visualization |
 |---|---|---|
-| Failed Logins — Last 24h | EventCode=4625 · stats count by Account_Name | Bar chart |
-| Account Lockouts — Last 7d | EventCode=4740 · table output | Events list |
-| Login Activity Over Time | EventCode=4624 · timechart count | Line chart |
-| Top Source IPs — After Hours | After-hours search · stats count by Workstation_Name | Column chart |
+| Failed Logins — Last 24h | `EventCode=4625 \| stats count by Account_Name` | Bar chart |
+| Account Lockouts — Last 7d | `EventCode=4740 \| table _time, Account_Name, Caller_Computer_Name` | Events list |
+| Login Activity Over Time | `EventCode=4624 \| timechart count` | Line chart |
+| Top Source Machines — After Hours | After-hours search `\| stats count by Workstation_Name` | Column chart |
+
+4. Save the dashboard.
+
+![Windows Security Overview dashboard — all 4 panels populated with data](screenshots/14_dashboard-security-overview.png)
 
 ---
 
-## Step 6 — Create an Automated Alert
+### 8. Create an Automated Brute Force Alert
 
-Search to save as alert:
+Run this search first to confirm it returns results (intentionally type the wrong password 10+ times on DC01 to generate events):
+
 ```
 index=windows_logs sourcetype=WinEventLog:Security EventCode=4625
 | stats count as failures by Account_Name
 | where failures > 10
 ```
 
-Alert settings:
-- **Name:** Potential Brute Force — High Failure Count
-- **Type:** Scheduled
-- **Schedule:** Every 15 minutes
-- **Trigger:** Number of Results > 0
-- **Action:** Add to Triggered Alerts
+Then save as an alert: **Save As → Alert**
 
----
-
-## Verification Checklist
-
-| Check | How to Verify |
+| Setting | Value |
 |---|---|
-| Data flowing | `index=windows_logs \| head 10` returns recent events |
-| Failed login search | EventCode=4625 search returns results (type wrong password on DC01 to generate events) |
-| Dashboard populated | Windows Security Overview shows all 4 panels with data |
-| Alert active | Settings → Searches, Reports, and Alerts → alert shows Enabled |
+| Name | Potential Brute Force — High Failure Count |
+| Alert type | Scheduled |
+| Run every | 15 minutes |
+| Trigger condition | Number of Results > 0 |
+| Trigger actions | Add to Triggered Alerts |
+
+Verify: **Settings → Searches, Reports, and Alerts** → alert shows Status: Enabled.
+
+![Alert configuration — Potential Brute Force alert enabled, scheduled every 15 minutes](screenshots/15_alert-brute-force-config.png)
 
 ---
 
-## Portfolio Notes
+### 9. Commit and Push to GitHub
 
-Take screenshots of:
-- Your populated "Windows Security Overview" dashboard
-- The alert configuration page
-- An SPL search returning results (4625, 4624, 4740)
-- The Universal Forwarder connected status in Splunk
+After completing all steps and saving screenshots to the `screenshots/` folder:
 
-These screenshots are direct evidence of SIEM hands-on experience for SOC Analyst and Security Engineer applications.
-
----
-
-## Files in This Repo
-
+```powershell
+git add .
+git commit -m "feat: splunk lab3 — siem deployment, spl searches, dashboard, brute force alert"
+git push
 ```
-splunk-lab3/
-├── README.md                          ← this file
-├── screenshots/
-│   ├── architecture.svg               ← infrastructure diagram
-│   ├── splunk-search-ui.png           ← add your screenshot
-│   ├── dashboard-failed-logins.png    ← add your screenshot
-│   ├── dashboard-account-lockouts.png ← add your screenshot
-│   ├── dashboard-security-overview.png← add your screenshot
-│   ├── alert-brute-force-config.png   ← add your screenshot
-│   └── forwarder-data-flowing.png     ← add your screenshot
-├── scripts/
-│   ├── inputs.conf                    ← Universal Forwarder config
-│   └── spl-searches.md               ← all SPL queries with explanations
-└── splunk-siem-sop.txt               ← step-by-step runbook
+
+---
+
+## Key Skills Demonstrated
+
+- Azure CLI provisioning of two-VM architecture with shared VNet and per-VM NSG rules
+- SSH from PowerShell to Linux VM — no additional client required
+- Splunk Enterprise installation and configuration on Ubuntu 22.04
+- Splunk receiving port and index configuration via the web UI
+- Universal Forwarder installation and `inputs.conf` configuration on Windows Server
+- SPL query writing — `stats`, `sort`, `head`, `table`, `timechart`, `eval`, `where`
+- Security dashboard construction with multiple panel types
+- Scheduled alert creation for automated brute-force detection
+- Windows Event ID analysis — 4624 (logon), 4625 (failed logon), 4740 (lockout)
+- Git version control and GitHub portfolio management via CLI
+
+---
+
+## Cleanup
+
+To avoid ongoing Azure charges, delete the resource group when the lab is complete.
+
+```powershell
+az group delete --name rg-lab03-0626 --yes --no-wait
 ```
